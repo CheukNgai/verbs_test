@@ -615,7 +615,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       end_loss = compute_loss(end_logits, end_positions)
 
       total_loss = (start_loss + end_loss) / 2.0
-
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 
@@ -1029,7 +1028,7 @@ def main(_):
               "worker": ["localhost:9101"], \
               "ps": ["localhost:9102"] \
           },\
-         "task": {"type": "worker", "index": 0},\
+         "task": {"type": "ps", "index": 0},\
          "rpc_layer": "grpc"\
   }'
 
@@ -1051,7 +1050,7 @@ def main(_):
         FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
   is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-  distribute = tf.contrib.distribute.ParameterServerStrategy()
+  distribute = tf.contrib.distribute.ParameterServerStrategy(num_gpus_per_worker=4)
   run_config = tf.contrib.tpu.RunConfig(
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
@@ -1080,7 +1079,7 @@ def main(_):
 
   model_fn = model_fn_builder(
       bert_config=bert_config,
-      init_checkpoint=FLAGS.init_checkpoint,
+      init_checkpoint=None,
       learning_rate=FLAGS.learning_rate,
       num_train_steps=num_train_steps,
       num_warmup_steps=num_warmup_steps,
