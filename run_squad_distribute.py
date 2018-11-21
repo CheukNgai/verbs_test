@@ -32,7 +32,6 @@ import tensorflow as tf
 flags = tf.flags
 
 FLAGS = flags.FLAGS
-
 ## Required parameters
 flags.DEFINE_string(
     "bert_config_file", None,
@@ -617,12 +616,13 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       total_loss = (start_loss + end_loss) / 2.0
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
-
+      logging_hook = tf.train.LoggingTensorHook({"loss" : total_loss}, every_n_iter=100)
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
-          scaffold_fn=scaffold_fn)
+          scaffold_fn=scaffold_fn,
+          training_hooks = [logging_hook])
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
@@ -1025,11 +1025,11 @@ def main(_):
   #specify the cluster
   os.environ['TF_CONFIG'] = '{\
          "cluster": { \
-              "worker": ["localhost:9101"], \
-              "ps": ["localhost:9102"] \
+              "worker": ["10.0.11.6:9101"], \
+              "ps": ["10.0.11.6:9102"] \
           },\
          "task": {"type": "ps", "index": 0},\
-         "rpc_layer": "grpc"\
+         "rpc_layer": "grpc+gdr"\
   }'
 
   tf.logging.set_verbosity(tf.logging.INFO)
@@ -1060,7 +1060,7 @@ def main(_):
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
           per_host_input_for_training=is_per_host),
-      train_distribute=distribute, protocol='grpc')
+      train_distribute=distribute, protocol='grpc+gdr')
 
   train_examples = None
   num_train_steps = None
