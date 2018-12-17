@@ -32,6 +32,7 @@ import tensorflow as tf
 flags = tf.flags
 
 FLAGS = flags.FLAGS
+
 ## Required parameters
 flags.DEFINE_string(
     "bert_config_file", None,
@@ -614,23 +615,22 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       end_loss = compute_loss(end_logits, end_positions)
 
       total_loss = (start_loss + end_loss) / 2.0
-      train_op = optimization.create_optimizer(
-          total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
-      logging_hook = tf.train.LoggingTensorHook({"loss" : total_loss}, every_n_iter=100)
-      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+      global_step = tf.train.get_global_step() 
+      optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+      train_op = optimizer.minimize(total_loss, global_step=global_step)
+      
+      output_spec = tf.estimator.EstimatorSpec(
           mode=mode,
           loss=total_loss,
-          train_op=train_op,
-          scaffold_fn=scaffold_fn,
-          training_hooks = [logging_hook])
+          train_op=train_op)
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
           "start_logits": start_logits,
           "end_logits": end_logits,
       }
-      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
-          mode=mode, predictions=predictions, scaffold_fn=scaffold_fn)
+      output_spec = tf.estimator.EstimatorSpec(
+          mode=mode, predictions=predictions)
     else:
       raise ValueError(
           "Only TRAIN and PREDICT modes are supported: %s" % (mode))
@@ -638,7 +638,6 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
     return output_spec
 
   return model_fn
-
 
 def input_fn_builder(input_file, seq_length, is_training, drop_remainder, train_batch_size):
   """Creates an `input_fn` closure to be passed to TPUEstimator."""
@@ -668,7 +667,7 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder, train_
 
     return example
 
-  def input_fn(params):
+  def input_fn():
     """The actual input function."""
     batch_size = train_batch_size
 
@@ -688,7 +687,6 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder, train_
     return d
 
   return input_fn
-
 
 RawResult = collections.namedtuple("RawResult",
                                    ["unique_id", "start_logits", "end_logits"])
@@ -1019,17 +1017,14 @@ def validate_flags_or_throw(bert_config):
         "The max_seq_length (%d) must be greater than max_query_length "
         "(%d) + 3" % (FLAGS.max_seq_length, FLAGS.max_query_length))
 
-
 def main(_):
-
   #specify the cluster
   os.environ['TF_CONFIG'] = '{\
          "cluster": { \
-         "worker": ["10.0.11.6:9105", "10.0.13.2:9106", "10.0.17.3:9107", "10.0.15.4:9108"], \
-         "ps": ["10.0.11.6:9101", "10.0.13.2:9102", "10.0.17.3:9103", "10.0.15.4:9104"] \
-          },\
+         "worker": ["10.0.24.3:9100"], \
+         "ps": ["10.0.24.3:9108"]},\
          "task": {"type": "ps", "index": 0},\
-         "rpc_layer": "grpc"\
+         "rpc_layer": "grpc+verbs"\
   }'
 
   tf.logging.set_verbosity(tf.logging.INFO)
@@ -1044,24 +1039,15 @@ def main(_):
       vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
 
   tpu_cluster_resolver = None
-
   if FLAGS.use_tpu and FLAGS.tpu_name:
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
         FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
   is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-  distribute = tf.contrib.distribute.ParameterServerStrategy(num_gpus_per_worker=4)
-  run_config = tf.contrib.tpu.RunConfig(
-      cluster=tpu_cluster_resolver,
-      master=FLAGS.master,
-      model_dir=FLAGS.output_dir,
-      save_checkpoints_steps=None,
-      tpu_config=tf.contrib.tpu.TPUConfig(
-          iterations_per_loop=FLAGS.iterations_per_loop,
-          num_shards=FLAGS.num_tpu_cores,
-          per_host_input_for_training=is_per_host),
-      train_distribute=distribute, protocol='grpc')
 
+  # set up run config
+  distribute = tf.contrib.distribute.ParameterServerStrategy(num_gpus_per_worker=4)
+  config = tf.estimator.RunConfig(train_distribute=distribute, save_checkpoints_steps=None, protocol='grpc+verbs')
   train_examples = None
   num_train_steps = None
   num_warmup_steps = None
@@ -1088,12 +1074,8 @@ def main(_):
 
   # If TPU is not available, this will fall back to normal Estimator on CPU
   # or GPU.
-  estimator = tf.contrib.tpu.TPUEstimator(
-      use_tpu=FLAGS.use_tpu,
-      model_fn=model_fn,
-      config=run_config,
-      train_batch_size=FLAGS.train_batch_size,
-      predict_batch_size=FLAGS.predict_batch_size)
+  estimator = tf.estimator.Estimator(
+      model_fn=model_fn, config=config)
 
   if FLAGS.do_train:
     # We write to a temporary file to avoid storing very large constant tensors
@@ -1126,66 +1108,11 @@ def main(_):
         drop_remainder=True, train_batch_size=FLAGS.train_batch_size)
     train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn)
     eval_spec = tf.estimator.EvalSpec(input_fn=train_input_fn)
+    print(distribute.distribute_dataset(train_input_fn)._dataset)
+
+    print(distribute.distribute_dataset(train_input_fn)._prefetch_on_device)
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
-  if FLAGS.do_predict:
-    eval_examples = read_squad_examples(
-        input_file=FLAGS.predict_file, is_training=False)
-
-    eval_writer = FeatureWriter(
-        filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
-        is_training=False)
-    eval_features = []
-
-    def append_feature(feature):
-      eval_features.append(feature)
-      eval_writer.process_feature(feature)
-
-    convert_examples_to_features(
-        examples=eval_examples,
-        tokenizer=tokenizer,
-        max_seq_length=FLAGS.max_seq_length,
-        doc_stride=FLAGS.doc_stride,
-        max_query_length=FLAGS.max_query_length,
-        is_training=False,
-        output_fn=append_feature)
-    eval_writer.close()
-
-    tf.logging.info("***** Running predictions *****")
-    tf.logging.info("  Num orig examples = %d", len(eval_examples))
-    tf.logging.info("  Num split examples = %d", len(eval_features))
-    tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
-
-    all_results = []
-
-    predict_input_fn = input_fn_builder(
-        input_file=eval_writer.filename,
-        seq_length=FLAGS.max_seq_length,
-        is_training=False,
-        drop_remainder=False)
-
-    # If running eval on the TPU, you will need to specify the number of
-    # steps.
-    all_results = []
-    for result in estimator.predict(
-        predict_input_fn, yield_single_examples=True):
-      if len(all_results) % 1000 == 0:
-        tf.logging.info("Processing example: %d" % (len(all_results)))
-      unique_id = int(result["unique_ids"])
-      start_logits = [float(x) for x in result["start_logits"].flat]
-      end_logits = [float(x) for x in result["end_logits"].flat]
-      all_results.append(
-          RawResult(
-              unique_id=unique_id,
-              start_logits=start_logits,
-              end_logits=end_logits))
-
-    output_prediction_file = os.path.join(FLAGS.output_dir, "predictions.json")
-    output_nbest_file = os.path.join(FLAGS.output_dir, "nbest_predictions.json")
-    write_predictions(eval_examples, eval_features, all_results,
-                      FLAGS.n_best_size, FLAGS.max_answer_length,
-                      FLAGS.do_lower_case, output_prediction_file,
-                      output_nbest_file)
 
 
 if __name__ == "__main__":

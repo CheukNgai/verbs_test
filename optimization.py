@@ -57,7 +57,6 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu):
   # is how the model was trained (note that the Adam m/v variables are NOT
   # loaded from init_checkpoint.)
   optimizer = tf.train.AdamOptimizer(learning_rate)
-
   if use_tpu:
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)
 

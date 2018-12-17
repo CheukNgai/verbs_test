@@ -1043,8 +1043,8 @@ def main(_):
 
   is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
 
-  # set up run configi
-  #distribute = tf.contrib.distribute.ParameterServerStrategy(num_gpus_per_worker=4)
+  # set up run config
+  distribute = tf.contrib.distribute.ParameterServerStrategy(num_gpus_per_worker=2)
   distribute = None
   config = tf.estimator.RunConfig(train_distribute=distribute, protocol='grpc')
   train_examples = None
